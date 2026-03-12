@@ -164,7 +164,9 @@ class Orientation2D(Task):
     def __init__(self, name, desired):
         super().__init__(name, desired)
         self.err = np.zeros((3,1))# Initialize with proper dimensions
-        rotation_desired = self.rotation_matrix(desired.flatten().tolist()) # conver the desired angles to rotation matrix
+        self.quat_w_err = 0 
+        rotation_desired = self.rotation_matrix(np.vstack([np.zeros((2,1)), desired]).flatten().tolist()) # conver the desired angles to rotation matrix
+
         self.setDesired(rotation_desired)
 
     def rotation_matrix(self, angles):
@@ -203,11 +205,11 @@ class Orientation2D(Task):
         
     def update(self, robot):
         self.J = robot.getEEJacobian()[3:,:]   # Update task Jacobian (3DOFs - 3 angle)
-        r_cur = robot.getEETransform()[:3,:3].reshape(3,3)
+        r_cur = robot.getEETransform()[:3,:3].reshape(3,3) # current ee orientation in rotation matrix
         w, e = self.quaternion_from_euler_scipy(r_cur) # quaternion reprenstation of the current rotaion matrix
-        r_d = self.getDesired()
+        r_d = self.getDesired() # desired ee orientation in rotation matrix
         w_d, e_d = self.quaternion_from_euler_scipy(r_d) # quaternion reprenstation of the desired rotaion matrix
-        quat_w_err = w*w_d + e.T@e_d
+        self.quat_w_err = w*w_d + e.T@e_d
         quat_e_err = w*e_d - w_d*e - np.cross(e.flatten(), e_d.flatten()).reshape((3,1))
         self.err = quat_e_err
         
@@ -218,6 +220,7 @@ class Configuration2D(Task):
     def __init__(self, name, desired):
         super().__init__(name, desired)
         self.err = np.zeros((6,1)) # Initialize with proper dimensions
+        self.quat_w_err = 0
         self.setDesired(desired)
 
     def rotation_matrix(self, angles):
@@ -265,12 +268,12 @@ class Configuration2D(Task):
         # Orientation Jacobian
         Jorr = robot.getEEJacobian()[3:,:] 
         # Orientation error
-        r_cur = robot.getEETransform()[:3,:3].reshape(3,3)
+        r_cur = robot.getEETransform()[:3,:3].reshape(3,3) # current ee orientation in rotation matrix
         w, e = self.quaternion_from_euler_scipy(r_cur)
-        angle_d = self.getDesired()[2:,].reshape(3,1)
-        r_d = self.rotation_matrix(angle_d.flatten().tolist())
+        angle_d = np.vstack([np.zeros((2,1)), self.getDesired()[2:,]])
+        r_d = self.rotation_matrix(angle_d.flatten().tolist()) # desired ee orientation in rotation matrix
         w_d, e_d = self.quaternion_from_euler_scipy(r_d)
-        quat_w_err = w*w_d + e.T@e_d
+        self.quat_w_err = w*w_d + e.T@e_d
         quat_e_err = w*e_d - w_d*e - np.cross(e.flatten(), e_d.flatten()).reshape((3,1))
 
         self.J = np.vstack((Jpos, Jorr))
