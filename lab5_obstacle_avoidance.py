@@ -1,7 +1,7 @@
 from lab4_robotics import * # Includes numpy import
 import matplotlib.pyplot as plt
 import matplotlib.animation as anim
-from scipy.spatial.transform import Rotation as R
+import matplotlib.patches as patch
 
 # Robot model - 3-link manipulator
 d = np.zeros(3)                      # displacement along Z-axis
@@ -11,15 +11,22 @@ alpha = np.zeros(3)                  # rotation around X-axis
 revolute = [True, True, True]        # flags specifying the type of joints
 robot = Manipulator(d, theta, a, alpha, revolute) # Manipulator object
 
-# Task hierarchy definition (task is in high to low priority)
-# Task list for Part 2 execution
-tasks = [
-            #   JointPosition("Joint position", np.array([[np.pi/2]]), 1),
-            Position2D("Link 3 position", np.array([0.5, 0.5]).reshape(2,1), 3), # input (x,y, link_ind) Note: link index start from 1
-            Orientation2D("Link 2 orientation", np.array([[0]]).reshape(1,1), 2), # input (theta, link_ind)
-        ]
+# Task hierarchy definition
+obstacle_pos_1 = np.array([0.0, 1.0]).reshape(2,1)
+obstacle_r_1 = 0.5
 
-tasks[0].setGainMatrix(np.diag([1, 1])) 
+obstacle_pos_2 = np.array([0.7, -0.5]).reshape(2,1)
+obstacle_r_2 = 0.3
+
+obstacle_pos_3 = np.array([-0.5, -0.7]).reshape(2,1)
+obstacle_r_3 = 0.4
+
+tasks = [ 
+          Obstacle2D("Obstacle avoidance", obstacle_pos_1, np.array([obstacle_r_1, obstacle_r_1+0.05]), 3),
+          Obstacle2D("Obstacle avoidance", obstacle_pos_2, np.array([obstacle_r_2, obstacle_r_2+0.05]), 3),
+          Obstacle2D("Obstacle avoidance", obstacle_pos_3, np.array([obstacle_r_3, obstacle_r_3+0.05]), 3),
+          Position2D("End-effector position", np.array([1.0, 0.5]).reshape(2,1), 3)
+        ] 
 
 # Simulation params
 dt = 1.0/60.0
@@ -32,9 +39,13 @@ ax.set_aspect('equal')
 ax.grid()
 ax.set_xlabel('x[m]')
 ax.set_ylabel('y[m]')
+ax.add_patch(patch.Circle(obstacle_pos_1.flatten(), obstacle_r_1, color='red', alpha=0.3))
+ax.add_patch(patch.Circle(obstacle_pos_2.flatten(), obstacle_r_2, color='purple', alpha=0.3))
+ax.add_patch(patch.Circle(obstacle_pos_3.flatten(), obstacle_r_3, color='green', alpha=0.3))
 line, = ax.plot([], [], 'o-', lw=2) # Robot structure
 path, = ax.plot([], [], 'c-', lw=1) # End-effector path
 point, = ax.plot([], [], 'rx') # Target
+
 PPx = []
 PPy = []
 
@@ -70,9 +81,9 @@ def simulate(t):
     global tasks
     global robot
     global PPx, PPy
-    global err_log, time_log, current_time, dt # variables for logging 
-
-    ### Recursive Task-Priority algorithm
+    global err_log, time_log, current_time
+    
+    ### Recursive Task-Priority algorithm (w/set-based tasks)
     # Initialize null-space projector
     P = np.eye(3) # robot has 3DOF
     # Initialize output vector (joint velocity)
@@ -82,22 +93,6 @@ def simulate(t):
     for i in range(len(tasks)):
         # Update task state
         tasks[i].update(robot)
-        # Compute augmented Jacobian
-        Jtask = tasks[i].getJacobian()
-        Ji = np.zeros((Jtask.shape[0], robot.dof)) 
-        Ji[:, :tasks[i].link] = Jtask # broadcast the link Jacobian to the task Jacobian
-        Jbar_i = Ji @ P
-
-        # Compute task velocity 
-        Jbar_dls = DLS(Jbar_i, 0.2)
-        feedforward_err = tasks[i].getFeedforwardVelocity() + tasks[i].getGainMatrix() @ tasks[i].err
-        dq_task = Jbar_dls @ (feedforward_err- Ji@dq)
-
-        # Accumulate velocity
-        dq = dq + dq_task
-
-        # Update null-space projector
-        P = P - np.linalg.pinv(Jbar_i)@Jbar_i
 
         task_name = tasks[i].name 
         if "position" in task_name.lower():
@@ -123,9 +118,33 @@ def simulate(t):
             euler = r.as_euler('zyx', degrees=True) # Convert to Euler (yaw, pitch, roll) in degrees
             yaw_err = euler[0] 
             err_tasks.append(abs(yaw_err))
+        elif "obstacle" in task_name.lower():
+            norm_dist = np.linalg.norm(tasks[i].dist_ee_obs)
+            err_tasks.append(norm_dist)
+
+        # Move to next task if not active
+        if tasks[i].isActive == 0:                
+            continue
+        
+            # Compute augmented Jacobian
+        Jtask = tasks[i].getJacobian()
+        Ji = np.zeros((Jtask.shape[0], robot.dof)) 
+        Ji[:, :tasks[i].link] = Jtask # broadcast the link Jacobian to the task Jacobian
+        Jbar_i = Ji @ P
+
+        # Compute task velocity 
+        Jbar_dls = DLS(Jbar_i, 0.2)
+        feedforward_err = tasks[i].getFeedforwardVelocity() + tasks[i].getGainMatrix() @ tasks[i].err
+        dq_task = Jbar_dls @ (tasks[i].isActive*feedforward_err- Ji@dq)
+
+        # Accumulate velocity
+        dq = dq + dq_task
+
+        # Update null-space projector
+        P = P - np.linalg.pinv(Jbar_i)@Jbar_i
 
     # Logging data for data visualization
-    err_log.append(err_tasks)
+    err_log.append(np.array(err_tasks).tolist())
     current_time += dt
     time_log.append(current_time)
 
@@ -138,8 +157,9 @@ def simulate(t):
     PPx.append(PP[0,-1])
     PPy.append(PP[1,-1])
     path.set_data(PPx, PPy)
-    point.set_data(tasks[0].getDesired()[0], tasks[0].getDesired()[1])
-
+    
+    point.set_data(tasks[3].getDesired()[0], tasks[3].getDesired()[1]) # get the desired position of the end-effector
+    
     return line, path, point
 
 # Run simulation
@@ -147,7 +167,7 @@ animation = anim.FuncAnimation(fig, simulate, np.arange(0, 10, dt),
                                 interval=10, blit=True, init_func=init, repeat=True)
 plt.show()
 
-labels = [task.name for task in tasks]
+labels = [task.name.lower() for task in tasks]
 
 # Visualize joint position change overtime
 err_log = np.array(err_log) 
@@ -158,7 +178,8 @@ if len(tasks) == 1 and tasks[0].name == "Configuration task": # Configuration ta
     ax_q.plot(time_log, err_log[:, 1], label=f'e2 End-effector orientation')
 else:
     for i in range(len(tasks)):
-        ax_q.plot(time_log, err_log[:, i], label=f'e{i+1} {labels[i]}')
+        err_string = f"d_{i+1}" if "obstacle" in labels[i] else f"e_{i+1}" 
+        ax_q.plot(time_log, err_log[:, i], label=f'{err_string} ({labels[i]})')
 
 ax_q.set_title('Task-Priority')
 ax_q.set_xlabel('Time[s]')
